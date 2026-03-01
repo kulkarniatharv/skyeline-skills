@@ -75,7 +75,7 @@ await app.approvals.requestBySlug("support-reply", {
 const pending = await app.approvals.listPending();
 ```
 
-Use approval requests when prompt changes should go through reviewers. Prefer `requestBySlug` unless you already have a numeric prompt version ID.
+Use approval requests when prompt changes should go through reviewers. Prefer `requestBySlug` unless you already have a numeric prompt version ID, and use `listPending` to inspect the current user&apos;s pending approvals for the selected application.
 
 ## Chat and streaming
 
