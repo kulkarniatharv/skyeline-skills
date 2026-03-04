@@ -382,5 +382,5 @@ const completion = await openai.chat.completions.create({
 
 ## Reference
 
-- Docs: https://skyeline.dev/docs#sdk
-- Agent skills docs: https://skyeline.dev/docs#agent-skills
+- Docs: https://skyeline.dev/docs/sdk
+- Agent skills docs: https://skyeline.dev/docs/agent-skills
