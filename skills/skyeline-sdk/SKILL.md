@@ -34,7 +34,7 @@ const client = new SkyelineClient({
 const app = client.app("my-app");
 ```
 
-`baseUrl` and `apiKey` accept `string | undefined` — pass env vars directly; the constructor throws a descriptive error if either is missing. Use `client.app("my-app")` as the default entry point for app-scoped prompt and approval work.
+`baseUrl` and `apiKey` accept `string | undefined` — pass env vars directly; the constructor throws a descriptive error if either is missing. Use `client.app("my-app")` as the default entry point for app-scoped prompt and approval work, especially when you want to treat prompts as SDK-managed assets in apps, CI, or agents.
 
 ## Prompt management
 
@@ -89,54 +89,46 @@ Use `populatePrompt` when variables matter. It validates required `{{variables}}
 ## Approval workflows
 
 ```typescript
-// Discover chains
-const chains = await app.approvals.listChains();
-const chainId = chains[0]?.id;
+const chain = (await app.approvals.listChains())[0];
 
-if (!chainId) {
-  throw new Error("No approval chains configured for this application.");
+if (!chain) {
+  throw new Error("Create an approval chain in the dashboard before requesting approval.");
 }
 
-// Request approval (auto-resolves promptId from latest version)
-await app.approvals.requestBySlug("support-reply", {
-  chainId,
+// Request approval by prompt slug
+const request = await app.approvals.requestBySlug("support-reply", {
+  chainId: chain.id,
   comments: "Ready for review",
 });
 
-// Request approval for a specific version
-await app.approvals.requestBySlug(
+// Or request a specific version explicitly
+const pinnedRequest = await app.approvals.requestBySlug(
   "support-reply",
-  { chainId },
+  { chainId: chain.id },
   { version: "v2" },
 );
 
-// List pending approvals for this application
-const pending = await app.approvals.listPending();
+// Store request.id so webhook events can resume the workflow later
+const requestId = request.id;
 
-// View approval history
-const history = await app.approvals.historyBySlug("support-reply");
+// Poll only if webhook delivery is unavailable
+const latestStatus = await app.approvals.get(requestId);
 
-// Approve or reject
-await app.approvals.respond(requestId, {
-  action: "approved",
-  comments: "Looks good!",
-});
-
-// Cancel a pending request
+// Cancel your own pending request if the rollout changes
 await app.approvals.cancel(requestId);
 
-// Fetch a specific request by ID
-const request = await app.approvals.get(requestId);
+// Numeric-ID methods are still available when you already have promptId
+await app.approvals.request(promptId, { chainId: chain.id });
 ```
 
-Use `requestBySlug` unless you already have a numeric prompt version ID. Use `listPending` to inspect the current application&apos;s pending approvals.
+`app().approvals` is the approval workflow for apps, agents, and CI. Application keys can discover chains, create approval requests, fetch request status, and cancel their own pending requests. Approvers review requests in the Skyeline dashboard. Use outbound webhooks when your workflow needs to react automatically after a request is completed. Use `requestBySlug` unless you already have a numeric prompt version ID.
 
 ## Chat and streaming
 
 ```typescript
 // Non-streaming
 const response = await client.chat.create({
-  model: "openai/gpt-4o-mini",
+  model: "openai/gpt-5-mini",
   messages: [{ role: "user", content: "Summarize this ticket." }],
 });
 console.log(response.content);      // text response
@@ -145,7 +137,7 @@ console.log(response.usage);        // { inputTokens, outputTokens, totalTokens 
 
 // Streaming
 for await (const event of client.chat.stream({
-  model: "openai/gpt-4o-mini",
+  model: "openai/gpt-5-mini",
   messages: [{ role: "user", content: "Stream a short answer." }],
 })) {
   if (event.type === "text-delta") {
@@ -155,7 +147,7 @@ for await (const event of client.chat.stream({
 
 // Tool calls
 const toolResponse = await client.chat.create({
-  model: "openai/gpt-4o",
+  model: "openai/gpt-5",
   messages: [{ role: "user", content: "What is the weather in SF?" }],
   tools: [
     {
@@ -176,7 +168,7 @@ for (const call of toolResponse.toolCalls) {
 
 // Per-request overrides (timeout, retries, headers)
 await client.chat.create(
-  { model: "openai/gpt-4o-mini", messages: [{ role: "user", content: "Hi" }] },
+  { model: "openai/gpt-5-mini", messages: [{ role: "user", content: "Hi" }] },
   { timeoutMs: 5000, maxRetries: 0, headers: { "X-Trace-Id": "trace-123" } },
 );
 ```
@@ -190,7 +182,7 @@ import { z } from "zod";
 
 // object — returns inferred Zod type
 const classification = await client.chat.createStructured({
-  model: "openai/gpt-4o-mini",
+  model: "openai/gpt-5-mini",
   messages: [{ role: "user", content: "Classify this support issue." }],
   output: {
     type: "object",
@@ -204,7 +196,7 @@ const classification = await client.chat.createStructured({
 
 // array — returns inferred Zod type[]
 const items = await client.chat.createStructured({
-  model: "openai/gpt-4o-mini",
+  model: "openai/gpt-5-mini",
   messages: [{ role: "user", content: "Return 3 tags for: distributed tracing" }],
   output: {
     type: "array",
@@ -214,7 +206,7 @@ const items = await client.chat.createStructured({
 
 // choice — returns one of the string options
 const route = await client.chat.createStructured({
-  model: "openai/gpt-4o-mini",
+  model: "openai/gpt-5-mini",
   messages: [{ role: "user", content: "Route to: sales, support, or engineering?" }],
   output: {
     type: "choice",
@@ -224,13 +216,13 @@ const route = await client.chat.createStructured({
 
 // json — returns unknown (untyped JSON)
 const freeform = await client.chat.createStructured({
-  model: "openai/gpt-4o-mini",
+  model: "openai/gpt-5-mini",
   messages: [{ role: "user", content: "Return a JSON summary." }],
   output: { type: "json" },
 });
 ```
 
-`createStructured` is non-streaming only. Use `object` with Zod for typed results, `array` for lists, `choice` for enum routing, and `json` for untyped JSON.
+`createStructured` is non-streaming only. The SDK validates Zod-backed `object` and `array` outputs, plus `choice` outputs, before returning them. Catch `SkyelineStructuredOutputValidationError` when typed structured output does not match the declared contract. Plain JSON Schema `object` / `array` definitions and `json` outputs remain unvalidated and return `unknown`.
 
 ## Webhook verification
 
@@ -252,10 +244,10 @@ export async function handleWebhook(request: Request) {
 
     switch (event.type) {
       case "approval.requested":
-        console.log(event.data.promptSlug, event.data.chainName);
+        console.log(event.data.promptSlug, event.data.requester);
         break;
       case "approval.updated":
-        console.log(event.data.action, event.data.actorId);
+        console.log(event.data.action, event.data.actor);
         break;
       case "approval.completed":
         console.log(event.data.status, event.data.promptVersion);
@@ -289,7 +281,7 @@ Use these utilities when you need local validation or rendering without an API c
 
 ## Error handling
 
-All API errors extend `SkyelineApiError`. Catch specific subclasses for targeted remediation.
+HTTP responses map to `SkyelineApiError` subclasses, while client-side helpers such as structured-output validation, webhook verification, and prompt templating expose their own typed errors.
 
 ```typescript
 import {
@@ -297,10 +289,26 @@ import {
   SkyelineAuthError,
   SkyelineNotFoundError,
   SkyelineRateLimitError,
+  SkyelineStructuredOutputValidationError,
   SkyelineValidationError,
   SkyelineWebhookVerificationError,
   MissingVariablesError,
 } from "@skyeline/sdk";
+
+try {
+  await client.chat.createStructured({
+    model: "openai/gpt-5-mini",
+    messages: [{ role: "user", content: "Route this to support." }],
+    output: {
+      type: "choice",
+      options: ["sales", "support", "engineering"],
+    },
+  });
+} catch (error) {
+  if (error instanceof SkyelineStructuredOutputValidationError) {
+    console.error(error.outputType, error.rawOutput, error.issues);
+  }
+}
 
 try {
   await app.prompts.getLatest("nonexistent");
@@ -324,7 +332,7 @@ try {
   }
 
   if (error instanceof SkyelineApiError) {
-    // Catch-all for any API error (all above extend this)
+    // Catch-all for API errors only
     console.error(error.message, error.status, error.code, error.type);
   }
 }
@@ -344,6 +352,7 @@ try {
 | `SkyelineAuthError` | 401, 403 | Invalid API key or insufficient permissions |
 | `SkyelineNotFoundError` | 404 | Resource does not exist |
 | `SkyelineRateLimitError` | 429 | Too many requests (`retryAfterMs` for backoff) |
+| `SkyelineStructuredOutputValidationError` | 500 (client-side) | `createStructured` returned data that failed Zod or choice validation |
 | `SkyelineValidationError` | 400, 422 | Invalid request parameters |
 | `SkyelineApiError` | Any other | Server errors, unexpected failures (catch-all base) |
 | `SkyelineWebhookVerificationError` | — | Invalid webhook signature, timestamp, or payload |
@@ -351,18 +360,42 @@ try {
 
 ## OpenAI compatibility
 
-Skyeline exposes OpenAI-compatible endpoints. Use the OpenAI SDK directly when you already have OpenAI client code:
+Skyeline exposes OpenAI-compatible endpoints for drop-in OpenAI client migrations. This is separate from the Skyeline SDK.
+
+For new OpenAI-style integrations, prefer the Responses API. Chat Completions remains available for older code and incremental migrations.
+Use `@skyeline/sdk` when you want multi-provider model calls, provider/model strings, structured output helpers, or prompt workflows.
+Use the OpenAI SDK directly only when you need to preserve existing OpenAI client code.
 
 ```typescript
 import OpenAI from "openai";
 
 const openai = new OpenAI({
   apiKey: process.env.SKYELINE_API_KEY,
-  baseURL: process.env.SKYELINE_BASE_URL,
+  baseURL: "https://api.skyeline.dev/v1",
+});
+
+const response = await openai.responses.create({
+  model: "gpt-5-mini",
+  instructions: "Write concise release notes.",
+  input: "Summarize the latest deployment in one paragraph.",
+  store: true,
+});
+
+console.log(response.output_text);
+```
+
+Chat Completions is also supported:
+
+```typescript
+import OpenAI from "openai";
+
+const openai = new OpenAI({
+  apiKey: process.env.SKYELINE_API_KEY,
+  baseURL: "https://api.skyeline.dev/v1",
 });
 
 const completion = await openai.chat.completions.create({
-  model: "gpt-4o-mini",
+  model: "gpt-5-mini",
   messages: [{ role: "user", content: "Hello!" }],
 });
 ```
@@ -371,14 +404,17 @@ const completion = await openai.chat.completions.create({
 
 - Install `@skyeline/sdk@beta`.
 - Prefer the SDK over raw HTTP unless the user explicitly asks for cURL or fetch examples.
-- Prefer `client.app("my-app")` for prompt and approval work.
+- Use `client.chat.create`, `client.chat.stream`, and `client.chat.createStructured` for OpenAI, Anthropic, Google, and Groq model calls.
+- Use OpenAI compatibility only for existing OpenAI SDK integrations or migrations.
+- Prefer `openai.responses.create` over `openai.chat.completions.create` for new OpenAI-compatible integrations.
+- Prefer `client.app("my-app")` for prompt work and approval requests.
 - Use `populatePrompt` instead of hand-rolling template substitution for remote prompts.
 - Use `client.chat.createStructured` for typed JSON outputs — supports `object`, `array`, `choice`, and `json` types.
+- Catch `SkyelineStructuredOutputValidationError` when Zod-backed object/array outputs or choice results must match a strict contract.
 - Handle `text-delta` events when consuming stream output.
 - Catch `SkyelineRateLimitError` and use `retryAfterMs` for backoff when building resilient integrations.
 - Use `client.webhooks.constructEvent` for webhook verification — never manually parse or verify signatures.
 - Do not invent unsupported SDK methods. The complete method surface is documented in the sections above.
-- If the task changes Skyeline SDK usage patterns, update the hosted skill and docs examples too.
 
 ## Reference
 
